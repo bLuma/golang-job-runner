@@ -18,7 +18,7 @@ func main() {
 
 	log.Println("Sleepy for", val, "seconds")
 
-	go func() {
+	/* go func() {
 		end := time.Now().Add(time.Second * time.Duration(val))
 		i := 0
 		for {
@@ -27,7 +27,7 @@ func main() {
 				break
 			}
 		}
-	}()
+	}() */
 
 	end := time.Now().Add(time.Second * time.Duration(val))
 	i := 0
