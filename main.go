@@ -5,7 +5,6 @@ import (
 )
 
 func main() {
-
 	if testFlagPresence("-client") {
 		startClient()
 	} else {

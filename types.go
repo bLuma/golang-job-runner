@@ -41,6 +41,8 @@ type LeasedConfiguration struct {
 	Host      string
 	StartTime time.Time
 	Expiry    time.Time
+	MemUsed   []int64
+	CPUUsed   []int64
 }
 
 type FinishedConfiguration struct {
@@ -48,5 +50,7 @@ type FinishedConfiguration struct {
 	Host      string
 	StartTime time.Time
 	EndTime   time.Time
+	MemUsed   []int64
+	CPUUsed   []int64
 	Status    string
 }

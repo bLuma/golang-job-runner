@@ -8,7 +8,7 @@ import (
 )
 
 func marshalJSONAsString(v interface{}) string {
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := json.Marshal(v) // , "", "  ") /* Indent */
 	if err != nil {
 		log.Fatalln(err)
 		return ""
@@ -22,7 +22,7 @@ func marshalJSONAndWrite(w io.Writer, v interface{}) bool {
 		httpw.Header().Set("Content-Type", "application/json")
 	}
 
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := json.Marshal(v) // , "", "  ") /* Indent */
 	if err != nil {
 		log.Fatalln(err)
 		return false

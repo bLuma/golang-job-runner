@@ -1,10 +1,33 @@
 package main
 
+import (
+	"log"
+	"os/exec"
+	"strconv"
+)
+
 func testIfProcessIsRunning(pid int) bool {
-	panic("Not yet implemented")
-	return false
+	//out, err := exec.Command("kill", "-s", "0", strconv.Itoa(pid)).CombinedOutput()
+	out, err := exec.Command("ps", "-o", "stat", "h", strconv.Itoa(pid)).CombinedOutput()
+
+	if err != nil {
+		// log.Println(err)
+		return false
+	}
+
+	if string(out) == "" || out[0] == 'Z' || out[0] == 'z' {
+		return false
+	}
+
+	// if string(out) == "" {
+	// 	return true // pid exist
+	// }
+	return true
 }
 
 func killProcess(pid int) {
-	panic("Not yet implemented")
+	_, err := exec.Command("kill", "-s", "9", strconv.Itoa(pid)).CombinedOutput()
+	if err != nil {
+		log.Println(err)
+	}
 }

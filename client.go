@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,8 @@ type jobInfo struct {
 	StartTime  time.Time
 	ExpiryTime time.Time
 	Cmd        *exec.Cmd
+
+	DeadCounter int
 }
 
 type clientData struct {
@@ -28,6 +31,10 @@ type clientData struct {
 	MaximumJobCount int
 	ServerAddress   string
 	SafeExpression  string
+
+	MaxMemoryLimit              int
+	MinimumCPUPercent           int
+	KillDeadProcessAfterMinutes int
 
 	Jobs map[int]jobInfo
 
@@ -50,6 +57,10 @@ func startClient() {
 	flag.Bool("client", true, "Sets client mode")
 	flag.StringVar(&client.Hostname, "hostname", "<unk>", "Client hostname")
 	flag.IntVar(&client.MaximumJobCount, "maxjobs", 1, "Maximal concurrent job count")
+	// TODO: remove HACK for modifying of java memory limit
+	flag.IntVar(&client.MaxMemoryLimit, "memory", 32, "Maximum JRE memory for heap in GBs")
+	flag.IntVar(&client.MinimumCPUPercent, "minimumcpupercent", 3, "Process must use minimum of X % of CPU to consider as alive")
+	flag.IntVar(&client.KillDeadProcessAfterMinutes, "killdeadprocessafterminutes", 5, "Kill process after X minutes of dead state")
 	flag.StringVar(&client.ServerAddress, "master", "http://localhost:8088", "Master address")
 	flag.StringVar(&client.SafeExpression, "safeexpr", "", "Safe expression") // "java -cp sleepyjava.jar"
 	workingFolder := flag.String("workdir", "./", "Sets working folder")
@@ -74,9 +85,25 @@ func startClient() {
 
 	go routineJobRequester()
 	go routineJobChecker()
+	go routineUsageLogger()
 
 	ch := make(chan struct{})
 	<-ch
+}
+
+func routineUsageLogger() {
+	<-time.After(time.Second * 5)
+
+	for {
+		client.Lock.Lock()
+		for _, job := range client.Jobs {
+			cpu, mem := getJobStats(job)
+			go processLogUsageFor(job.Configuration, cpu, mem)
+		}
+		client.Lock.Unlock()
+
+		<-time.After(time.Second * 60)
+	}
 }
 
 func routineJobChecker() {
@@ -91,6 +118,9 @@ func routineJobChecker() {
 
 			case !testIfProcessIsRunning(job.PID):
 				go processFinishedJob(job)
+
+			case testIfProcessIsDead(&job):
+				go processDeadJob(job)
 			}
 		}
 		client.Lock.Unlock()
@@ -108,6 +138,8 @@ func processTimeoutedJob(job jobInfo) {
 		client.Lock.Lock()
 		delete(client.Jobs, job.PID)
 		client.Lock.Unlock()
+	} else {
+		log.Println(err)
 	}
 	// else let job stay in map and try to delete it on next cycle
 }
@@ -115,6 +147,19 @@ func processTimeoutedJob(job jobInfo) {
 func processFinishedJob(job jobInfo) {
 	log.Println("processFinishedJob", job.ID, "PID:", job.PID)
 	err := sendJobFinishNotification(job.Configuration, true)
+
+	if err == nil {
+		client.Lock.Lock()
+		delete(client.Jobs, job.PID)
+		client.Lock.Unlock()
+	}
+	// else let job stay in map and try to delete it on next cycle
+}
+
+func processDeadJob(job jobInfo) {
+	log.Println("processDeadJob", job.ID, "PID:", job.PID)
+	killProcess(job.PID)
+	err := sendJobDeadNotification(job.Configuration)
 
 	if err == nil {
 		client.Lock.Lock()
@@ -155,6 +200,13 @@ func launchNewJob(conf *Configuration) {
 	if !satisfiesSafeExpression(conf) {
 		log.Println("Ignoring job", conf.ID, "safe condition not satisfied")
 		return
+	}
+
+	// TODO: remove this HACK, modifies configuration, changes java memory limit
+	for idx, value := range conf.Params {
+		if value == "-Xmx32g" {
+			conf.Params[idx] = fmt.Sprintf("-Xmx%dg", client.MaxMemoryLimit)
+		}
 	}
 
 	var job jobInfo
@@ -258,4 +310,59 @@ func sendJobFinishNotification(conf Configuration, success bool) error {
 	}
 
 	return nil
+}
+
+func sendJobDeadNotification(conf Configuration) error {
+	action := "dead"
+	// log.Println("job", conf, action)
+
+	u, err := url.Parse(fmt.Sprintf("%s/%s", client.ServerAddress, action))
+	if err != nil {
+		return err
+	}
+
+	q := u.Query()
+	q.Set("hostname", client.Hostname)
+	q.Set("configuration", marshalJSONAsString(conf))
+
+	u.RawQuery = q.Encode()
+
+	r, err := http.Get(u.String())
+	// log.Println("ret:", r.StatusCode, r.Status)
+
+	if err != nil {
+		return err
+	}
+
+	if r.StatusCode != http.StatusOK {
+		return errors.New("Unexpected status code on dead notification")
+	}
+
+	return nil
+}
+
+func processLogUsageFor(conf Configuration, cpu int64, mem int64) {
+	u, err := url.Parse(fmt.Sprintf("%s/usage", client.ServerAddress))
+	if err != nil {
+		return
+	}
+
+	q := u.Query()
+	q.Set("hostname", client.Hostname)
+	q.Set("cpu", strconv.FormatInt(cpu, 10))
+	q.Set("mem", strconv.FormatInt(mem, 10))
+	q.Set("configuration", marshalJSONAsString(conf))
+
+	u.RawQuery = q.Encode()
+
+	r, err := http.Get(u.String())
+	// log.Println("ret:", r.StatusCode, r.Status)
+
+	if err != nil {
+		return
+	}
+
+	if r.StatusCode != http.StatusOK {
+		return //errors.New("Unexpected status code on finish notification")
+	}
 }

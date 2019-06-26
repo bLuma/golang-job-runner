@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"reflect"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -58,6 +58,8 @@ func startServer() {
 	http.HandleFunc("/request", requestHandler)
 	http.HandleFunc("/finish", finishedHandler)
 	http.HandleFunc("/timeout", timeoutHandler)
+	http.HandleFunc("/dead", deadHandler)
+	http.HandleFunc("/usage", usageHandler)
 
 	log.Fatal(http.ListenAndServe(listenAddress, nil))
 }
@@ -143,7 +145,7 @@ func requestHandler(w http.ResponseWriter, req *http.Request) {
 
 	conf := server.Available[i]
 	delete(server.Available, i)
-	server.Leased[i] = LeasedConfiguration{conf, hostname, time.Now(), time.Now().Add(time.Second*time.Duration(conf.Runtime) + time.Minute*10)}
+	server.Leased[i] = LeasedConfiguration{conf, hostname, time.Now(), time.Now().Add(time.Second*time.Duration(conf.Runtime) + time.Minute*10), nil, nil}
 
 	marshalJSONAndWrite(w, conf)
 
@@ -172,13 +174,13 @@ func finishedHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	knownConfiguration, ok := server.Leased[conf.ID]
-	if !ok || !reflect.DeepEqual(knownConfiguration.Configuration, conf) {
+	if !ok /* || !reflect.DeepEqual(knownConfiguration.Configuration, conf) */ {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	delete(server.Leased, conf.ID)
-	server.Finished[conf.ID] = FinishedConfiguration{conf, hostname, knownConfiguration.StartTime, time.Now(), "finished"}
+	server.Finished[conf.ID] = FinishedConfiguration{conf, hostname, knownConfiguration.StartTime, time.Now(), knownConfiguration.MemUsed, knownConfiguration.CPUUsed, "finished"}
 	log.Println("Job", conf.ID, "status=finished (", hostname, ")")
 }
 
@@ -204,14 +206,46 @@ func timeoutHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	knownConfiguration, ok := server.Leased[conf.ID]
-	if !ok || !reflect.DeepEqual(knownConfiguration.Configuration, conf) {
+	if !ok /*|| !reflect.DeepEqual(knownConfiguration.Configuration, conf)*/ {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	delete(server.Leased, conf.ID)
-	server.Finished[conf.ID] = FinishedConfiguration{conf, hostname, knownConfiguration.StartTime, time.Now(), "timeout"}
+	server.Finished[conf.ID] = FinishedConfiguration{conf, hostname, knownConfiguration.StartTime, time.Now(), knownConfiguration.MemUsed, knownConfiguration.CPUUsed, "timeout"}
 	log.Println("Job", conf.ID, "status=timeout (", hostname, ")")
+}
+
+func deadHandler(w http.ResponseWriter, req *http.Request) {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+
+	hostname := req.URL.Query().Get("hostname")
+	if len(hostname) == 0 {
+		hostname = "<unknown>"
+	}
+
+	configuration := req.URL.Query().Get("configuration")
+	if len(configuration) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	var conf Configuration
+	if !unmarshalJSON([]byte(configuration), &conf) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	knownConfiguration, ok := server.Leased[conf.ID]
+	if !ok /*|| !reflect.DeepEqual(knownConfiguration.Configuration, conf)*/ {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	delete(server.Leased, conf.ID)
+	server.Finished[conf.ID] = FinishedConfiguration{conf, hostname, knownConfiguration.StartTime, time.Now(), knownConfiguration.MemUsed, knownConfiguration.CPUUsed, "dead"}
+	log.Println("Job", conf.ID, "status=dead (", hostname, ")")
 }
 
 func addHandler(w http.ResponseWriter, req *http.Request) {
@@ -253,4 +287,61 @@ func isConfigurationIDUsed(cid ConfigurationID) bool {
 	}
 
 	return false
+}
+
+func usageHandler(w http.ResponseWriter, req *http.Request) {
+	server.lock.Lock()
+	defer server.lock.Unlock()
+
+	/*hostname := req.URL.Query().Get("hostname")
+	if len(hostname) == 0 {
+		hostname = "<unknown>"
+	}*/
+
+	cpu := req.URL.Query().Get("cpu")
+	if len(cpu) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	mem := req.URL.Query().Get("mem")
+	if len(mem) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	cpui, err := strconv.ParseInt(cpu, 10, 32)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	memi, err := strconv.ParseInt(mem, 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	configuration := req.URL.Query().Get("configuration")
+	if len(configuration) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	var conf Configuration
+	if !unmarshalJSON([]byte(configuration), &conf) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	knownConfiguration, ok := server.Leased[conf.ID]
+	if !ok /* || !reflect.DeepEqual(knownConfiguration.Configuration, conf) */ {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	knownConfiguration.CPUUsed = append(knownConfiguration.CPUUsed, cpui)
+	knownConfiguration.MemUsed = append(knownConfiguration.MemUsed, memi)
+
+	server.Leased[conf.ID] = knownConfiguration
 }
